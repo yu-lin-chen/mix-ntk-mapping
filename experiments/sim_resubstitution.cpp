@@ -44,13 +44,16 @@ int main()
 
   for ( auto const& benchmark : epfl_benchmarks() )
   {
-    fmt::print( "[i] processing {}\n", benchmark );
+    fmt::print( "[i] {}", benchmark );
     aig_network aig;
     if ( lorina::read_aiger( benchmark_path( benchmark ), aiger_reader( aig ) ) != lorina::return_code::success )
     {
       continue;
     }
-
+ using depth_ntk = depth_view<aig_network>;
+  std::cout << fmt::format( " i/o = {}/{}   gates = {}   level = {}",
+                            aig.num_pis(), aig.num_pos(), aig.num_gates(), 
+                            depth_ntk{ aig }.depth() );
     resubstitution_params ps;
     resubstitution_stats st;
 
@@ -59,13 +62,12 @@ int main()
     ps.max_pis = 8;
     ps.max_divisors = std::numeric_limits<uint32_t>::max();
 
-    const uint32_t size_before = aig.num_gates();
     sim_resubstitution( aig, ps, &st );
     aig = cleanup_dangling( aig );
+  std::cout << fmt::format( " | gates = {}   level = {}\n",aig.num_gates(), depth_ntk{ aig }.depth() );
+    // const auto cec = benchmark == "hyp" ? true : abc_cec( aig, benchmark );
 
-    const auto cec = benchmark == "hyp" ? true : abc_cec( aig, benchmark );
-
-    exp( benchmark, size_before, size_before - aig.num_gates(), to_seconds( st.time_total ), cec );
+    // exp( benchmark, size_before, size_before - aig.num_gates(), to_seconds( st.time_total ), cec );
   }
 
   exp.save();

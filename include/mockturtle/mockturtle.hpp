@@ -160,6 +160,7 @@
 #include "mockturtle/io/write_verilog.hpp"
 #include "mockturtle/networks/abstract_xag.hpp"
 #include "mockturtle/networks/aig.hpp"
+#include "mockturtle/networks/mix.hpp"
 #include "mockturtle/networks/aqfp.hpp"
 #include "mockturtle/networks/buffered.hpp"
 #include "mockturtle/networks/cover.hpp"

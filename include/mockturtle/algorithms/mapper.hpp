@@ -42,6 +42,7 @@
 #include "../networks/mig.hpp"
 #include "../networks/sequential.hpp"
 #include "../networks/xag.hpp"
+#include "../networks/mix.hpp"
 #include "../utils/node_map.hpp"
 #include "../utils/stopwatch.hpp"
 #include "../utils/tech_library.hpp"
@@ -1889,11 +1890,12 @@ public:
   using cut_t = typename network_cuts_t::cut_t;
 
 public:
-  explicit exact_map_impl( Ntk& ntk, exact_library<NtkDest, NInputs> const& library, map_params const& ps, map_stats& st )
+  explicit exact_map_impl( Ntk& ntk, exact_library<NtkDest, NInputs> const& library, map_params const& ps, map_stats& st,  mix_network* mix_ptr )
       : ntk( ntk ),
         library( library ),
         ps( ps ),
         st( st ),
+        mix_ptr( mix_ptr),
         lib_database( library.get_database() ),
         node_match( ntk.size() ),
         matches(),
@@ -1902,7 +1904,7 @@ public:
     std::tie( lib_inv_area, lib_inv_delay ) = library.get_inverter_info();
   }
 
-  NtkDest run()
+NtkDest run( )
   {
     stopwatch t( st.time_mapping );
 
@@ -1967,7 +1969,7 @@ public:
     }
 
     /* generate the output network using the computed mapping */
-    finalize_cover( res, old2new );
+  finalize_cover( res, old2new );
 
     if ( ps.enable_logic_sharing )
       return cleanup_dangling( res );
@@ -2306,66 +2308,180 @@ private:
     return { dest, old2new };
   }
 
-  void finalize_cover( NtkDest& res, node_map<signal<NtkDest>, Ntk>& old2new )
+// 放在 exact_map_impl 的 private 区
+template<class MatchT, class SupergateT, class CutT>
+mix_network::signal build_supergate_in_mix(
+    mix_network& mix,
+    typename Ntk::node const& src_root,
+    MatchT const& match,
+    SupergateT const& supergate,
+    CutT const& best_cut,
+    unsigned phase,
+    std::unordered_map<uint32_t, mix_network::signal>& src2mix )
+{
+  using mix_signal = mix_network::signal;
+  auto const& db = library.get_database();
+
+  // db 的 PI 位置
+  std::unordered_map<uint32_t, uint32_t> db_pi_pos;
+  uint32_t pi_ctr = 0;
+  db.foreach_pi( [&]( auto const& p ){ db_pi_pos[db.node_to_index( p )] = pi_ctr++; } );
+
+  // 1) supergate 叶子 -> mix 信号（基于 src2mix）
+  std::vector<mix_signal> leaf_values( NInputs, mix.get_constant( false ) );
+  uint32_t ctr = 0;
+  for ( auto l : best_cut )
   {
-    if ( !ps.enable_logic_sharing || iteration == ps.area_flow_rounds + 1 )
+    auto it = src2mix.find( l );
+    assert( it != src2mix.end() ); // 确保叶子已经在 mix 中
+    leaf_values[match.permutation[ctr++]] = it->second;
+  }
+  for ( uint32_t i = 0; i < NInputs; ++i )
+    if ( ( match.negation >> i ) & 1 ) leaf_values[i] = !leaf_values[i];
+
+  // 2) 递归构建 supergate
+  std::unordered_map<uint32_t, mix_signal> memo;
+  using db_t    = std::remove_cv_t<std::remove_reference_t<decltype(db)>>;
+  using db_node = typename db_t::node;
+
+  auto rec = [&]( auto&& self, db_node n ) -> mix_signal {
+    auto idx = db.node_to_index( n );
+    if ( auto it = memo.find( idx ); it != memo.end() )
+      return it->second;
+
+    mix_signal out{};
+    if ( db.is_constant( n ) )
     {
-      auto const& db = library.get_database();
-
-      ntk.foreach_node( [&]( auto const& n ) {
-        if ( ntk.is_constant( n ) || ntk.is_ci( n ) )
-          return true;
-        auto index = ntk.node_to_index( n );
-        if ( node_match[index].map_refs[2] == 0u )
-          return true;
-
-        /* get the implemented phase and map the best cut */
-        unsigned phase = ( node_match[index].best_supergate[0] != nullptr ) ? 0 : 1;
-        auto& best_cut = cuts.cuts( index )[node_match[index].best_cut[phase]];
-
-        std::vector<signal<NtkDest>> children( NInputs, res.get_constant( false ) );
-        auto const& match = matches[index][best_cut->data.match_index];
-        auto const& supergate = node_match[index].best_supergate[phase];
-        auto ctr = 0u;
-        for ( auto l : best_cut )
-        {
-          children[match.permutation[ctr++]] = old2new[ntk.index_to_node( l )];
-        }
-        for ( auto i = 0u; i < NInputs; ++i )
-        {
-          if ( ( match.negation >> i ) & 1 )
-          {
-            children[i] = !children[i];
-          }
-        }
-        topo_view topo{ db, supergate->root };
-        auto f = cleanup_dangling( topo, res, children.begin(), children.end() ).front();
-
-        if ( phase == 1 )
-          f = !f;
-
-        old2new[n] = f;
-        return true;
+      out = mix.get_constant( false );
+    }
+    else if ( db.is_pi( n ) )
+    {
+      auto itp = db_pi_pos.find( idx );
+      assert( itp != db_pi_pos.end() );
+      out = leaf_values[itp->second];
+    }
+    else
+    {
+      std::vector<mix_signal> fins;
+      db.foreach_fanin( n, [&]( auto const& f ) {
+        auto s = self( self, db.get_node( f ) );
+        if ( db.is_complemented( f ) ) s = !s;
+        fins.push_back( s );
       } );
+
+      if ( fins.size() == 2 )
+        out = db.is_xor( n ) ? mix.create_xor( fins[0], fins[1] )
+                             : mix.create_and( fins[0], fins[1] );
+      else if ( fins.size() == 3 )
+        out = db.is_xor3( n ) ? mix.create_xor3( fins[0], fins[1], fins[2] )
+                              : mix.create_maj ( fins[0], fins[1], fins[2] );
+      else
+        out = mix.get_constant( false );
+    }
+    memo[idx] = out;
+    return out;
+  };
+
+  auto out = rec( rec, db.get_node( supergate->root ) );
+  if ( db.is_complemented( supergate->root ) ) out = !out;
+  if ( phase == 1 ) out = !out;
+
+  const auto root_idx = ntk.node_to_index( src_root );
+
+  // 更新 src -> mix 的映射（关键）
+  src2mix[root_idx] = out;
+
+  // 记录等���关系
+  mix.add_choice( root_idx, out.index );
+
+  return out;
+}
+void finalize_cover( NtkDest& res, node_map<signal<NtkDest>, Ntk>& old2new )
+{
+  // 临时 src -> mix 映射，先放常量和 PI
+  std::unordered_map<uint32_t, mix_network::signal> src2mix;
+  if ( mix_ptr != nullptr )
+  {
+    // const 0 / const 1
+    auto zero_idx = ntk.node_to_index( ntk.get_node( ntk.get_constant( false ) ) );
+    src2mix[zero_idx] = mix_ptr->get_constant( false );
+    if ( ntk.get_node( ntk.get_constant( false ) ) != ntk.get_node( ntk.get_constant( true ) ) )
+    {
+      auto one_idx = ntk.node_to_index( ntk.get_node( ntk.get_constant( true ) ) );
+      src2mix[one_idx] = mix_ptr->get_constant( true );
     }
 
-    /* create POs */
-    ntk.foreach_po( [&]( auto const& f ) {
-      res.create_po( ntk.is_complemented( f ) ? res.create_not( old2new[f] ) : old2new[f] );
+    // PI：直接引用已有 mix PI（假设 index 对齐）
+    ntk.foreach_pi( [&]( auto const& n ){
+      auto idx = ntk.node_to_index( n );
+      src2mix[idx] = mix_ptr->make_signal( idx );
     } );
-
-    if constexpr ( has_foreach_ri_v<Ntk> )
-    {
-      ntk.foreach_ri( [&]( auto const& f ) {
-        res.create_ri( ntk.is_complemented( f ) ? res.create_not( old2new[f] ) : old2new[f] );
-      } );
-    }
-
-    /* write final results */
-    st.area = area;
-    st.delay = delay;
   }
 
+  if ( !ps.enable_logic_sharing || iteration == ps.area_flow_rounds + 1 )
+  {
+    auto const& db = library.get_database();
+
+    ntk.foreach_node( [&]( auto const& n ) {
+      if ( ntk.is_constant( n ) || ntk.is_pi( n ) )
+        return true;
+
+      auto index = ntk.node_to_index( n );
+      if ( node_match[index].map_refs[2] == 0u )
+        return true;
+
+      unsigned phase = ( node_match[index].best_supergate[0] != nullptr ) ? 0 : 1;
+      auto& best_cut = cuts.cuts( index )[node_match[index].best_cut[phase]];
+
+      std::vector<signal<NtkDest>> children( NInputs, res.get_constant( false ) );
+      auto const& match = matches[index][best_cut->data.match_index];
+      auto const& supergate = node_match[index].best_supergate[phase];
+
+      auto ctr = 0u;
+      for ( auto l : best_cut )
+        children[match.permutation[ctr++]] = old2new[ntk.index_to_node( l )];
+
+      for ( auto i = 0u; i < NInputs; ++i )
+        if ( ( match.negation >> i ) & 1 ) children[i] = !children[i];
+
+      topo_view topo{ db, supergate->root };
+      auto f = cleanup_dangling( topo, res, children.begin(), children.end() ).front();
+      if ( phase == 1 ) f = !f;
+      old2new[n] = f;
+
+      // 同步构建 mix
+      if ( mix_ptr )
+      {
+        build_supergate_in_mix( *mix_ptr, n, match, supergate, best_cut, phase, src2mix );
+      }
+
+      return true;
+    } );
+  }
+
+ntk.foreach_po( [&]( auto const& f, auto po_idx ) {
+  auto s = old2new[f];
+  if ( ntk.is_complemented( f ) )
+    s = res.create_not( s );
+
+  // 目标网络 PO
+  res.create_po( s );
+
+  // mix PO
+  if ( mix_ptr )
+  {
+    auto src_idx = ntk.node_to_index( ntk.get_node( f ) );
+    auto ms = src2mix.at( src_idx );
+    if ( ntk.is_complemented( f ) )
+      ms = !ms;
+
+    mix_ptr->create_po( ms );
+  }
+} );
+
+  st.area = area;
+  st.delay = delay;
+}
   template<bool ELA>
   bool set_mapping_refs()
   {
@@ -3394,7 +3510,7 @@ private:
   float lib_inv_delay;
 
   NtkDest const& lib_database;
-
+  mix_network * mix_ptr{nullptr};
   std::vector<node<Ntk>> top_order;
   std::vector<node_match_t<NtkDest, NInputs>> node_match;
   std::unordered_map<uint32_t, std::vector<cut_match_t<NtkDest, NInputs>>> matches;
@@ -3444,7 +3560,7 @@ private:
  * \param pst Mapping statistics
  */
 template<class Ntk, unsigned CutSize = 4u, typename CutData = cut_enumeration_exact_map_cut, class NtkDest, unsigned NInputs>
-NtkDest map( Ntk& ntk, exact_library<NtkDest, NInputs> const& library, map_params const& ps = {}, map_stats* pst = nullptr )
+NtkDest map( Ntk& ntk, exact_library<NtkDest, NInputs> const& library, map_params const& ps = {}, map_stats* pst = nullptr,  mix_network * mix_ptr = nullptr )
 {
   static_assert( is_network_type_v<Ntk>, "Ntk is not a network type" );
   static_assert( has_size_v<Ntk>, "Ntk does not implement the size method" );
@@ -3463,7 +3579,7 @@ NtkDest map( Ntk& ntk, exact_library<NtkDest, NInputs> const& library, map_param
   static_assert( has_foreach_ro_v<Ntk> == has_create_ro_v<NtkDest>, "Ntk and NtkDest networks are not both sequential" );
 
   map_stats st;
-  detail::exact_map_impl<NtkDest, CutSize, CutData, Ntk, NInputs> p( ntk, library, ps, st );
+  detail::exact_map_impl<NtkDest, CutSize, CutData, Ntk, NInputs> p( ntk, library, ps, st,mix_ptr );
   auto res = p.run();
 
   st.time_total = st.time_mapping + st.cut_enumeration_st.time_total;
