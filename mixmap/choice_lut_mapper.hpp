@@ -506,8 +506,8 @@ auto has_foreach_choice_impl( ... ) -> std::false_type;
 template<typename T, typename Fn>
 constexpr bool has_foreach_choice_v = decltype( has_foreach_choice_impl<T, Fn>( 0 ) )::value;
 template<class Ntk, bool StoreFunction, class LUTCostFn>
-class choice_lut_map_impl
-{
+class choice_lut_map_impl{
+
 private:
   /* special map for output drivers to perform some optimizations */
   enum class driver_type : uint32_t
@@ -606,11 +606,33 @@ public:
       return;
     }
     perform_mapping();
+dump_bestcuts_mapped_only();
     choose_best_po();
+dump_bestcuts_mapped_only();
     derive_mapping();
   }
 
 private:
+void dump_bestcuts_mapped_only()
+{
+  for ( auto const& n : topo_order )
+  {
+    if ( ntk.is_ci( n ) || ntk.is_constant( n ) )
+      continue;
+
+    const auto index = ntk.node_to_index( n );
+    if ( node_match[index].map_refs == 0 )
+      continue;
+
+    auto const& best_cut = cuts[index][0];
+    std::cout << "node " << index
+              << " best_cut size=" << best_cut.size()
+              << " leaves:";
+    for ( auto l : best_cut )
+      std::cout << " " << l;
+    std::cout << "\n";
+  }
+}
 void choose_best_po()
 {
   using signal_t = typename Ntk::signal;
@@ -637,6 +659,21 @@ void choose_best_po()
       return cnt;
     };
     return dfs( root_idx );
+  };
+
+  // --- 等价类去重 ---
+  std::unordered_set<uint32_t> chosen_class;
+
+  // 等价类标识：取 root + choice 里的最小 id
+  auto class_id = [&]( uint32_t root ) {
+    uint32_t id = root;
+    if constexpr ( has_foreach_choice_v<Ntk, std::function<void(uint32_t)>> )
+    {
+      ntk.foreach_choice( root, [&]( uint32_t c ) {
+        if ( c < id ) id = c;
+      } );
+    }
+    return id;
   };
 
   // --- 选每个 PO 的最优等价节点 ---
@@ -682,22 +719,23 @@ void choose_best_po()
     std::cout << "  -> best_idx=" << best_idx
               << " best_score=" << best_score << "\n";
 
+    // === 等价类去重 ===
+    auto cid = class_id( best_idx );
+    if ( !chosen_class.insert( cid ).second )
+    {
+      std::cout << "  skip PO[" << po_idx << "] class=" << cid << "\n";
+      return;
+    }
+
     auto best_sig = ntk.make_signal( ntk.index_to_node( best_idx ) );
     if ( po_compl ) best_sig = !best_sig;
 
     best_po_signals.push_back( best_sig );
   } );
 
-  // --- 只保留最优 PO（仅 mix_network 有接口） ---
-  if constexpr ( std::is_same_v<Ntk, mockturtle::mix_network> )
-  {
+  // --- 只保留最优 PO ---
     ntk.keep_outputs( best_po_signals );
     std::cout << "  num_pos(after keep) = " << ntk.num_pos() << "\n";
-  }
-  else
-  {
-    std::cout << "  [warn] keep_outputs not supported for this Ntk\n";
-  }
 
   // --- 重算 map_refs ---
   for ( auto& m : node_match ) m.map_refs = 0;
@@ -2578,7 +2616,6 @@ void debug_print_cut( cut_t const& c, uint32_t index, const char* tag = "" ) con
           opposites[n] = res.create_not(node_to_signal[n]);
           break;
       } } );
-std::cout<<"ceshiyuju"<<std::endl;
     /* TODO: add sequential compatibility */
     for ( auto const& n : topo_order )
     {
@@ -2732,9 +2769,6 @@ std::cout<<"ceshiyuju"<<std::endl;
 
       std::vector<node> nodes;
       auto const& best_cut = cuts[index][0];
-std::cout << "node " << index << " best_cut size=" << best_cut.size() << " leaves:";
-for (auto l : best_cut) std::cout << " " << l;
-std::cout << std::endl;
       for ( auto const& l : best_cut )
       {
         nodes.push_back( ntk.index_to_node( l ) );

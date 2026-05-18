@@ -47,17 +47,6 @@ class collapse_mapped_choice_impl {
       }
     };
 
-    // ===== debug root/leaves =====
-    ntk.foreach_node([&](auto const& n) {
-      if (ntk.is_constant(n) || ntk.is_pi(n) || !ntk.is_cell_root(n)) return;
-
-      std::cout << "root " << ntk.node_to_index(n) << " leaves:";
-      ntk.foreach_cell_fanin(n, [&](auto fanin) {
-        auto leaf = to_node(fanin);
-        std::cout << " " << ntk.node_to_index(leaf);
-      });
-      std::cout << std::endl;
-    });
 
     // ===== driver_type from PO =====
     ntk.foreach_po([&](auto const& f) {

@@ -83,11 +83,11 @@ int main(int argc, char** argv)
   // map_stats st1;
   // mig_network mig = mockturtle::map(aig, lib1, ps1, &st1,&mix);
     //exact map AIG -> XAG  | create xmg --> mix
-  // gate_dot_drawer<mix_network> drawer;
+  gate_dot_drawer<mix_network> drawer;
   // 写到文件
-  // std::ofstream os( "mix.dot" );
-  // write_dot( mix, os, drawer );
-  // os.close();
+  std::ofstream os( "mix.dot" );
+  write_dot( mix, os, drawer );
+  os.close();
    mapping_view<mix_network, true> mapped{ mix };
    also::choice_lut_map_params pst;
 pst.cross_choice_provider = [&mix](uint32_t idx, auto const& emit){
@@ -96,6 +96,7 @@ pst.cross_choice_provider = [&mix](uint32_t idx, auto const& emit){
   for (auto cand : mix.choice_table()[idx]) emit(cand);
 };
  also::choice_lut_map_inplace(mapped, pst); 
+ //mapped type:mapping_view mix_ntk
   klut_network klut = *lsmap::choice_to_luts<klut_network>( mapped );
 //   klut.foreach_gate([&](auto n) {
 //   std::cout << "LUT node " << n << ": ";
@@ -111,24 +112,23 @@ pst.cross_choice_provider = [&mix](uint32_t idx, auto const& emit){
 //   std::ofstream os("out.blif");
 // write_blif( klut, os );
 
-//  aig_network aiger_k = convert_klut_to_graph<aig_network>(klut);
-//         const auto miter_xmg = *miter<xmg_network>( aig, aiger_k ); 
-//         equivalence_checking_stats eq_st;
-//         const auto result = equivalence_checking( miter_xmg, {}, &eq_st );
-//         assert( result );
-//         assert( *result );
-//         std::cout << "Network is equivalent after resub\n";
-
    // dump_network_edges(xmg, "XMG(mapped)");
   //     dump_network_edges(mig, "MIG(mapped)");
-     dump_network_edges(mix, "mix");
-  //   const auto& tbl = mix.choice_table();
-  // std::cout << "\n=== mix choice_table ===\n";
-  // for (uint32_t idx = 0; idx < tbl.size(); ++idx) {
-  //   if (tbl[idx].empty()) continue;
-  //   std::cout << "root " << idx << " :";
-  //   for (auto cand : tbl[idx]) std::cout << " " << cand;
-  //   std::cout << "\n";
-  // }
+      dump_network_edges(mix, "mix");
+    const auto& tbl = mix.choice_table();
+  std::cout << "\n=== mix choice_table ===\n";
+  for (uint32_t idx = 0; idx < tbl.size(); ++idx) {
+    if (tbl[idx].empty()) continue;
+    std::cout << "root " << idx << " :";
+    for (auto cand : tbl[idx]) std::cout << " " << cand;
+    std::cout << "\n";
+  }
+   aig_network aiger_k = convert_klut_to_graph<aig_network>(klut);
+        const auto miter_xmg = *miter<xmg_network>( aig, aiger_k ); 
+        equivalence_checking_stats eq_st;
+        const auto result = equivalence_checking( miter_xmg, {}, &eq_st );
+        assert( result );
+        assert( *result );
+        std::cout << "Network is equivalent after resub\n";
   return 0;
 }

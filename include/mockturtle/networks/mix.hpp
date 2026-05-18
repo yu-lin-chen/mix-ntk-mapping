@@ -200,14 +200,26 @@ mix_network( std::shared_ptr<mix_storage> storage )
   }
 
   /* 永久 choice 表接口 */
-  void add_choice( uint32_t root_idx, uint32_t cand_idx )
-  {
-    ensure_choice_slot( root_idx );
-    auto& v = choice_table_[root_idx];
-    if ( std::find( v.begin(), v.end(), cand_idx ) == v.end() )
-      v.push_back( cand_idx );
-  }
+  // void add_choice( uint32_t root_idx, uint32_t cand_idx )
+  // {
+  //   ensure_choice_slot( root_idx );
+  //   auto& v = choice_table_[root_idx];
+  //   if ( std::find( v.begin(), v.end(), cand_idx ) == v.end() )
+  //     v.push_back( cand_idx );
+  // }
+void add_choice( uint32_t root_idx, uint32_t cand_idx )
+{
+  ensure_choice_slot( root_idx );
+  ensure_choice_slot( cand_idx );
 
+  auto& v = choice_table_[root_idx];
+  if ( std::find( v.begin(), v.end(), cand_idx ) == v.end() )
+    v.push_back( cand_idx );
+
+  auto& vr = choice_table_[cand_idx];
+  if ( std::find( vr.begin(), vr.end(), root_idx ) == vr.end() )
+    vr.push_back( root_idx );
+}
   template<class Emit>
   void foreach_choice( uint32_t root_idx, Emit&& emit ) const
   {
@@ -231,13 +243,24 @@ mix_network( std::shared_ptr<mix_storage> storage )
   // po--pool
 void keep_outputs( std::vector<signal> const& keep )
 {
-  // 先把旧输出 fanout 计数减掉
+  std::cout << "[mix] keep_outputs called: old=" << _outputs.size()
+            << " new=" << keep.size() << "\n";
+
+  std::cout << "  old outputs: ";
+  for ( auto const& o : _outputs )
+    std::cout << (o.complement ? "!" : "") << o.index << " ";
+  std::cout << "\n";
+
+  std::cout << "  new outputs: ";
+  for ( auto const& o : keep )
+    std::cout << (o.complement ? "!" : "") << o.index << " ";
+  std::cout << "\n";
+
   for ( auto const& o : _outputs )
     decr_fanout_size( static_cast<node>( o.index ) );
 
   _outputs = keep;
 
-  // 新输出 fanout +1
   for ( auto const& o : _outputs )
     incr_fanout_size( static_cast<node>( o.index ) );
 }
