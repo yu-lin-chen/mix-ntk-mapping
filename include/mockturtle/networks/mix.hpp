@@ -111,6 +111,7 @@ public:
     std::unordered_map<node_type, node, node_hash> hash;
     std::vector<signal> base_roots;
     std::vector<std::vector<uint32_t>> choice_table;
+    std::unordered_map<uint64_t, bool> choice_polarity;  // key = (root<<32)|cand, val = polarity_flip
     uint32_t trav_id{0};
   };
 
@@ -125,7 +126,8 @@ public:
         _outputs( _storage->outputs ),
         _hash( _storage->hash ),
         base_roots_( _storage->base_roots ),
-        choice_table_( _storage->choice_table )
+        choice_table_( _storage->choice_table ),
+        choice_polarity_( _storage->choice_polarity )
   {
     // node 0 = constant false
     _nodes.emplace_back();
@@ -139,7 +141,8 @@ public:
         _outputs( _storage->outputs ),
         _hash( _storage->hash ),
         base_roots_( _storage->base_roots ),
-        choice_table_( _storage->choice_table )
+        choice_table_( _storage->choice_table ),
+        choice_polarity_( _storage->choice_polarity )
   {
     _nodes.emplace_back();
     assign_from_aig( aig );
@@ -152,7 +155,8 @@ mix_network( std::shared_ptr<mix_storage> storage )
         _outputs( _storage->outputs ),
         _hash( _storage->hash ),
         base_roots_( _storage->base_roots ),
-        choice_table_( _storage->choice_table )
+        choice_table_( _storage->choice_table ),
+        choice_polarity_( _storage->choice_polarity )
   {
   }
 
@@ -220,6 +224,24 @@ void add_choice( uint32_t root_idx, uint32_t cand_idx )
   if ( std::find( vr.begin(), vr.end(), root_idx ) == vr.end() )
     vr.push_back( root_idx );
 }
+
+  /* 记录带极性的 choice 关系：root ↔ cand，polarity_flip=true 表示 cand 输出相对于 root 取反 */
+  void add_choice_with_polarity( uint32_t root_idx, uint32_t cand_idx, bool polarity_flip )
+  {
+    add_choice( root_idx, cand_idx );
+    uint64_t key = ( static_cast<uint64_t>( root_idx ) << 32 ) | cand_idx;
+    choice_polarity_[key] = polarity_flip;
+    uint64_t key_rev = ( static_cast<uint64_t>( cand_idx ) << 32 ) | root_idx;
+    choice_polarity_[key_rev] = polarity_flip;
+  }
+
+  /* 查询 root -> cand 是否存在极性翻转 */
+  bool get_choice_polarity( uint32_t root_idx, uint32_t cand_idx ) const
+  {
+    uint64_t key = ( static_cast<uint64_t>( root_idx ) << 32 ) | cand_idx;
+    auto it = choice_polarity_.find( key );
+    return it != choice_polarity_.end() && it->second;
+  }
   template<class Emit>
   void foreach_choice( uint32_t root_idx, Emit&& emit ) const
   {
@@ -869,6 +891,7 @@ private:
   std::unordered_map<node_type, node, node_hash>& _hash;
   std::vector<signal>& base_roots_;
   std::vector<std::vector<uint32_t>>& choice_table_;
+  std::unordered_map<uint64_t, bool>& choice_polarity_;
 
   void ensure_base_roots(uint32_t sz)
   {

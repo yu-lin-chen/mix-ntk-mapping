@@ -2391,8 +2391,8 @@ mix_network::signal build_supergate_in_mix(
   // 更新 src -> mix 的映射（关键）
   src2mix[root_idx] = out;
 
-  // 记录等���关系
-  mix.add_choice( root_idx, out.index );
+  // 记录等价关系（含极性翻转信息）
+  mix.add_choice_with_polarity( root_idx, out.index, out.complement != 0 );
 
   return out;
 }

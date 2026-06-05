@@ -606,7 +606,6 @@ public:
       return;
     }
     perform_mapping();
-dump_bestcuts_mapped_only();
     choose_best_po();
 dump_bestcuts_mapped_only();
     derive_mapping();
@@ -1404,7 +1403,12 @@ if constexpr ( has_foreach_choice_v<Ntk, std::function<void(uint32_t)>> )
         if ( ( *cut )->data.delay > node_data.required + epsilon ) continue;
 
         auto new_cut = *cut;
-        // 如需相位处理，可在此翻转： new_cut->func_id ^= 1;
+        // 根据 NPN 极性翻转 truth table（cand 的输出相对 root 取反时）
+        if constexpr ( StoreFunction )
+        {
+          if ( ntk.get_choice_polarity( ntk.node_to_index( n ), cand_index ) )
+            new_cut->func_id ^= 1;
+        }
 
         cuts[index].insert( new_cut, false, sort );
         if ( cuts[index].compare( new_cut, best_cut, sort ) )
